@@ -1,0 +1,76 @@
+name: hire_me
+description: "A platform connecting customers with blue-collar workers for on-demand services."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Firebase
+  firebase_core: ^3.3.0
+  firebase_auth: ^5.1.4
+  cloud_firestore: ^5.2.1
+  firebase_storage: ^12.1.3
+  firebase_messaging: ^15.0.4
+
+  # State Management
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.5
+
+  # Navigation
+  go_router: ^14.2.7
+
+  # Location & Maps
+  geolocator: ^13.0.1
+  google_maps_flutter: ^2.7.0
+  geocoding: ^3.0.0
+
+  # UI
+  flutter_svg: ^2.0.10+1
+  cached_network_image: ^3.4.0
+  image_picker: ^1.1.2
+  lottie: ^3.1.2
+  shimmer: ^3.0.0
+  iconsax: ^0.0.8
+
+  # Utilities
+  intl: ^0.19.0
+  uuid: ^4.4.2
+  shared_preferences: ^2.3.1
+  permission_handler: ^11.3.1
+  url_launcher: ^6.3.0
+  flutter_local_notifications: ^17.2.2
+
+  # Geo queries
+  geoflutterfire_plus: ^0.0.20
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.11
+  riverpod_generator: ^2.4.3
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/icons/
+    - assets/animations/
+  # 🔴 FIX #11 & #12: Downloaded Plus Jakarta Sans fonts and wired them up.
+  fonts:
+    - family: PlusJakartaSans
+      fonts:
+        - asset: assets/fonts/PlusJakartaSans-Regular.ttf
+        - asset: assets/fonts/PlusJakartaSans-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/PlusJakartaSans-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/PlusJakartaSans-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/PlusJakartaSans-ExtraBold.ttf
+          weight: 800

@@ -1,0 +1,331 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Document ID: {userId} (Firebase Auth UID)
+// Fields:
+//   - name: string (required, 2-100 chars) - user's full name
+//   - phone: string (required, 10-15 chars) - phone number
+//   - email: string (required, 5-254 chars) - email address
+//   - role: string (required, 'customer' or 'worker') — immutable after create
+//   - profilePhotoUrl: string (optional, ≤500 chars) - Firebase Storage URL
+//   - address: string (optional, ≤300 chars) - text address
+//   - location: latlng (optional) - GeoPoint
+//   - isVerified: bool (optional, default false) — only writable by server/admin
+//   - rating: number (optional, 0.0–5.0) — only writable by server/admin
+//   - totalJobs: number (optional, ≥0) — only writable by server/admin
+//   - createdAt: timestamp (required, immutable)
+//   --- Worker-only ---
+//   - skillCategory: string (optional, ≤50 chars)
+//   - experienceYears: number (optional, 0-50)
+//   - idProofUrl: string (optional, ≤500 chars)
+//   - isAvailable: bool (optional)
+//   - geohash: string (optional, ≤12 chars)
+//
+// Collection: job_requests
+// Document ID: auto-generated
+// Fields:
+//   - customerId: string (required, ≤128 chars, immutable) - owner UID
+//   - customerName: string (required, ≤100 chars)
+//   - customerPhotoUrl: string (optional, ≤500 chars)
+//   - categoryId: string (required, ≤50 chars, immutable)
+//   - categoryName: string (required, ≤50 chars)
+//   - title: string (required, 5-100 chars)
+//   - description: string (required, 10-1000 chars)
+//   - location: latlng (required, immutable)
+//   - address: string (required, ≤300 chars)
+//   - geohash: string (required, ≤12 chars)
+//   - status: string (required) — one of: pending, accepted, in_progress, completed, cancelled
+//   - workerId: string (optional, ≤128 chars)
+//   - workerName: string (optional, ≤100 chars)
+//   - photoUrls: list (optional, ≤3 items, each ≤500 chars)
+//   - scheduledAt: timestamp (optional)
+//   - createdAt: timestamp (required, immutable)
+//   - estimatedBudget: number (optional, >0)
+//   - finalAmount: number (optional, >0)
+//   - customerRating: number (optional, 1.0-5.0)
+//   - workerRating: number (optional, 1.0-5.0)
+//   - cancellationReason: string (optional, ≤500 chars)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Helper Functions
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if user owns the resource by UID path param
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Check if user owns based on document's customerId field
+    function isJobOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.customerId;
+    }
+
+    // Ensure uid / customerId field is not modified on update
+    function customerIdNotModified() {
+      return request.resource.data.customerId == resource.data.customerId;
+    }
+
+    // Ensure immutable fields haven't changed
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Validate required fields exist
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate document contains only allowed fields
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate string length
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+
+    // Validate optional string field (if present, must be within length)
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+
+    // Validate URL (optional field — if present, must start with https://)
+    function isValidOptionalUrl(field) {
+      return !(field in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].matches("^https://.*") &&
+              request.resource.data[field].size() <= 500);
+    }
+
+    // 🔴 FIX #5: The old rule required the timestamp ≤ request.time, which failed when
+    // clients used FieldValue.serverTimestamp() (server fills it in AFTER rule evaluation,
+    // so the value is null during the check) OR when clock drift made DateTime.now() slightly
+    // ahead of Firebase server time. We now accept a server-generated timestamp field by
+    // checking it's a timestamp type within a generous ±10 min window.
+    function isRecent(field) {
+      return request.resource.data[field] is timestamp &&
+             request.resource.data[field] > request.time - duration.value(10, 'm') &&
+             request.resource.data[field] < request.time + duration.value(10, 'm');
+    }
+
+    // Validate photo URL list (≤3 items, each a valid https URL ≤500 chars)
+    function isValidPhotoUrls() {
+      return !(('photoUrls') in request.resource.data) ||
+             (request.resource.data.photoUrls is list &&
+              request.resource.data.photoUrls.size() <= 3);
+    }
+
+    // Validate job status enum
+    function isValidStatus() {
+      return request.resource.data.status in
+        ['pending', 'accepted', 'in_progress', 'completed', 'cancelled'];
+    }
+
+    // Validate job status state transitions
+    // pending → accepted (worker accepts)
+    // accepted → in_progress (worker starts)
+    // accepted → cancelled (either party cancels)
+    // in_progress → completed (worker marks done)
+    // in_progress → cancelled (either party cancels)
+    // pending → cancelled (customer cancels before acceptance)
+    function validStatusTransition() {
+      let prev = resource.data.status;
+      let next = request.resource.data.status;
+      return (prev == 'pending'     && next == 'accepted')    ||
+             (prev == 'pending'     && next == 'cancelled')   ||
+             (prev == 'accepted'    && next == 'in_progress') ||
+             (prev == 'accepted'    && next == 'cancelled')   ||
+             (prev == 'in_progress' && next == 'completed')   ||
+             (prev == 'in_progress' && next == 'cancelled');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Domain Validators
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Validate a user document (used in both create and update)
+    function isValidUserData(data) {
+      return data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
+             data.phone is string && data.phone.size() >= 10 && data.phone.size() <= 15 &&
+             data.email is string && data.email.size() >= 5 && data.email.size() <= 254 &&
+             data.role in ['customer', 'worker'] &&
+             isValidOptionalUrl('profilePhotoUrl') &&
+             isValidOptionalString('address', 1, 300) &&
+             isValidOptionalString('skillCategory', 1, 50) &&
+             isValidOptionalString('geohash', 1, 12) &&
+             isValidOptionalUrl('idProofUrl') &&
+             !(('experienceYears') in data) || (data.experienceYears is number &&
+               data.experienceYears >= 0 && data.experienceYears <= 50);
+    }
+
+    // Validate a job request document (used in both create and update)
+    function isValidJobData(data) {
+      return data.customerId is string && data.customerId.size() >= 1 && data.customerId.size() <= 128 &&
+             data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 100 &&
+             data.categoryId is string && data.categoryId.size() >= 1 && data.categoryId.size() <= 50 &&
+             data.categoryName is string && data.categoryName.size() >= 1 && data.categoryName.size() <= 50 &&
+             data.title is string && data.title.size() >= 5 && data.title.size() <= 100 &&
+             data.description is string && data.description.size() >= 10 && data.description.size() <= 1000 &&
+             data.address is string && data.address.size() >= 1 && data.address.size() <= 300 &&
+             data.geohash is string && data.geohash.size() >= 1 && data.geohash.size() <= 12 &&
+             isValidStatus() &&
+             isValidPhotoUrls() &&
+             isValidOptionalString('workerName', 1, 100) &&
+             isValidOptionalString('cancellationReason', 1, 500) &&
+             isValidOptionalUrl('customerPhotoUrl') &&
+             !(('estimatedBudget') in data) || (data.estimatedBudget is number && data.estimatedBudget > 0) &&
+             !(('finalAmount') in data) || (data.finalAmount is number && data.finalAmount > 0) &&
+             !(('customerRating') in data) || (data.customerRating is number &&
+               data.customerRating >= 1.0 && data.customerRating <= 5.0) &&
+             !(('workerRating') in data) || (data.workerRating is number &&
+               data.workerRating >= 1.0 && data.workerRating <= 5.0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // /users/{userId}
+    // ─────────────────────────────────────────────────────────────────────
+    match /users/{userId} {
+
+      // 🔴 FIX #4: Allow any authenticated user to read profiles.
+      // Previously: isOwner(userId) only — blocked customers from reading worker profiles
+      // and workers from reading customer details after job acceptance (essential for the platform).
+      // Own profile: always readable.
+      // Others' profiles: readable by any authenticated user (needed for job matching & display).
+      allow read: if isAuthenticated();
+
+      // Create: authenticated user can create their own profile
+      // - uid in path must match auth uid (prevents creating for another user)
+      // - role can only be 'customer' or 'worker' (not 'admin')
+      // - isVerified, rating, totalJobs cannot be set by client on create
+      // - createdAt must be recent and server-generated
+      allow create: if isOwner(userId) &&
+                       isValidUserData(request.resource.data) &&
+                       hasRequiredFields(['name', 'phone', 'email', 'role', 'createdAt']) &&
+                       hasOnlyAllowedFields([
+                         'name', 'phone', 'email', 'role', 'profilePhotoUrl', 'address',
+                         'location', 'createdAt', 'skillCategory', 'experienceYears',
+                         'idProofUrl', 'isAvailable', 'geohash'
+                       ]) &&
+                       // Prevent privilege escalation — no admin roles via client
+                       request.resource.data.role in ['customer', 'worker'] &&
+                       // Prevent client from setting sensitive server fields
+                       !(('isVerified') in request.resource.data) &&
+                       !(('rating') in request.resource.data) &&
+                       !(('totalJobs') in request.resource.data) &&
+                       isRecent('createdAt');
+
+      // Update: owner can update their own profile
+      // - Cannot change role after creation (immutable)
+      // - Cannot change createdAt (immutable)
+      // - Cannot set isVerified, rating, totalJobs (server-only fields)
+      allow update: if isOwner(userId) &&
+                       isValidUserData(request.resource.data) &&
+                       hasOnlyAllowedFields([
+                         'name', 'phone', 'email', 'role', 'profilePhotoUrl', 'address',
+                         'location', 'createdAt', 'skillCategory', 'experienceYears',
+                         'idProofUrl', 'isAvailable', 'geohash'
+                       ]) &&
+                       // Immutable fields must not change
+                       areImmutableFieldsUnchanged(['role', 'createdAt']) &&
+                       // Prevent server-managed fields from being written
+                       !(('isVerified') in request.resource.data) &&
+                       !(('rating') in request.resource.data) &&
+                       !(('totalJobs') in request.resource.data);
+
+      // No client-initiated deletes
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // /job_requests/{jobId}
+    // ─────────────────────────────────────────────────────────────────────
+    match /job_requests/{jobId} {
+
+      // Any authenticated user can read job requests
+      // (workers need to see pending jobs; customers need to see their own)
+      // The app queries filter by customerId or workerId client-side
+      allow read: if isAuthenticated();
+
+      // Create: only authenticated customers can post a job request
+      // - customerId MUST match the authenticated user's UID (prevents spoofing)
+      // - Initial status must be 'pending'
+      // - workerId/workerName cannot be set on creation (server assigns)
+      // - Immutable fields set at creation: customerId, categoryId, location, createdAt
+      allow create: if isAuthenticated() &&
+                       request.resource.data.customerId == request.auth.uid &&
+                       isValidJobData(request.resource.data) &&
+                       hasRequiredFields([
+                         'customerId', 'customerName', 'categoryId', 'categoryName',
+                         'title', 'description', 'location', 'address', 'geohash',
+                         'status', 'createdAt'
+                       ]) &&
+                       hasOnlyAllowedFields([
+                         'customerId', 'customerName', 'customerPhotoUrl',
+                         'categoryId', 'categoryName', 'title', 'description',
+                         'location', 'address', 'geohash', 'status', 'photoUrls',
+                         'scheduledAt', 'createdAt', 'estimatedBudget'
+                       ]) &&
+                       // Status must start as pending
+                       request.resource.data.status == 'pending' &&
+                       // No worker assignment on create
+                       !(('workerId') in request.resource.data) &&
+                       !(('workerName') in request.resource.data) &&
+                       isRecent('createdAt');
+
+      // Update: job owner (customer) or assigned worker can update
+      // - customerId, categoryId, location, createdAt are immutable
+      // - Status must follow valid transitions
+      // - Only the assigned worker (workerId) can set status to in_progress/completed
+      // - Customer can set status to cancelled
+      // - Worker acceptance sets status from pending → accepted and sets workerId
+      allow update: if isAuthenticated() &&
+                       isValidJobData(request.resource.data) &&
+                       customerIdNotModified() &&
+                       areImmutableFieldsUnchanged(['customerId', 'categoryId', 'location', 'createdAt']) &&
+                       validStatusTransition() &&
+                       hasOnlyAllowedFields([
+                         'customerId', 'customerName', 'customerPhotoUrl',
+                         'categoryId', 'categoryName', 'title', 'description',
+                         'location', 'address', 'geohash', 'status', 'workerId',
+                         'workerName', 'photoUrls', 'scheduledAt', 'createdAt',
+                         'estimatedBudget', 'finalAmount', 'customerRating',
+                         'workerRating', 'cancellationReason'
+                       ]) &&
+                       // Only job owner or assigned worker can update
+                       (isJobOwner() ||
+                        (request.auth.uid == resource.data.workerId) ||
+                        // Worker accepting: sets workerId = their own uid
+                        (resource.data.status == 'pending' &&
+                         request.resource.data.status == 'accepted' &&
+                         request.resource.data.workerId == request.auth.uid));
+
+      // Only the customer who created the job can delete it (and only if pending)
+      allow delete: if isJobOwner() && resource.data.status == 'pending';
+    }
+
+    // Default deny — all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "558410707304",
+    "project_id": "hireme-4aec7",
+    "storage_bucket": "hireme-4aec7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:558410707304:android:8b588e57e66219624866dd",
+        "android_client_info": {
+          "package_name": "com.hireme"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBD0HiMafV-Kk-4H51QYovWPukVHuC66dU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
