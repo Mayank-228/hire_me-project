@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "558410707304",
-    "project_id": "hireme-4aec7",
-    "storage_bucket": "hireme-4aec7.firebasestorage.app"
+    "project_number": "YOUR_PROJECT_NUMBER",
+    "project_id": "YOUR_PROJECT_ID",
+    "storage_bucket": "YOUR_PROJECT_ID.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:558410707304:android:8b588e57e66219624866dd",
+        "mobilesdk_app_id": "1:YOUR_PROJECT_NUMBER:android:YOUR_APP_HASH",
         "android_client_info": {
           "package_name": "com.hireme"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyBD0HiMafV-Kk-4H51QYovWPukVHuC66dU"
+          "current_key": "YOUR_FIREBASE_API_KEY"
         }
       ],
       "services": {
